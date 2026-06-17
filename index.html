@@ -1557,9 +1557,9 @@
 
 <footer>
   <div class="footer-actions">
-    <button class="footer-btn" id="exportBtn">Exportar CSV</button>
-    <button class="footer-btn" id="importBtn">Importar CSV</button>
-    <input type="file" id="importInput" accept=".csv" style="display:none">
+    <button class="footer-btn" id="exportBtn">Exportar dades</button>
+    <button class="footer-btn" id="importBtn">Importar dades</button>
+    <input type="file" id="importInput" accept=".json,.csv" style="display:none">
     <button class="footer-btn" id="clearBtn">Esborrar tot</button>
   </div>
   <div class="footer-note">Les dades es guarden localment al navegador</div>
@@ -3075,40 +3075,86 @@ function render() {
 
 // ============== Export / Import ==============
 document.getElementById('exportBtn').addEventListener('click', () => {
-  const rows = [['date', 'time', 'qty']];
-  sortFeeds(feeds).forEach(f => rows.push([f.date, f.time, f.qty]));
-  const csv = rows.map(r => r.join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+  const payload = {
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    app: 'gala-tracker',
+    feeds: sortFeeds(feeds),
+    sleeps: [...sleeps],
+    activeSleep: activeSleep || null,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'gala_preses_' + todayISO() + '.csv';
+  a.download = 'gala_dades_' + todayISO() + '.json';
   a.click();
   URL.revokeObjectURL(url);
-  showToast('CSV exportat ✓');
+  showToast('Dades exportades ✓');
 });
+
 document.getElementById('importBtn').addEventListener('click', () => {
   document.getElementById('importInput').click();
 });
+
 document.getElementById('importInput').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = (ev) => {
     try {
-      const lines = ev.target.result.trim().split(/\r?\n/);
-      const imported = [];
-      for (let i = 1; i < lines.length; i++) {
-        const [date, time, qty] = lines[i].split(',');
-        if (date && time && qty) imported.push({ date: date.trim(), time: time.trim(), qty: parseInt(qty, 10) });
+      const text = ev.target.result.trim();
+      const fname = (file.name || '').toLowerCase();
+
+      // Try JSON first (also handles old CSV by falling through)
+      if (text.startsWith('{') || fname.endsWith('.json')) {
+        const data = JSON.parse(text);
+        const importedFeeds = Array.isArray(data.feeds) ? data.feeds.filter(f => f && f.date && f.time && typeof f.qty === 'number') : [];
+        const importedSleeps = Array.isArray(data.sleeps) ? data.sleeps.filter(s => s && s.id && s.type && s.startDate && s.startTime && s.endDate && s.endTime) : [];
+        const importedActive = data.activeSleep && data.activeSleep.id ? data.activeSleep : null;
+        if (importedFeeds.length === 0 && importedSleeps.length === 0) {
+          alert('El fitxer no conté dades vàlides.');
+          return;
+        }
+        const summary = importedFeeds.length + ' biberons i ' + importedSleeps.length + ' sons';
+        if (!confirm('Importar ' + summary + '? (substituirà TOTES les dades actuals)')) return;
+        feeds = importedFeeds;
+        sleeps = importedSleeps;
+        activeSleep = importedActive;
+        saveFeeds();
+        saveSleeps();
+        render();
+        showToast(summary + ' importats ✓');
+        return;
       }
-      if (imported.length > 0 && confirm('Importar ' + imported.length + ' preses? (substituirà les actuals)')) {
+
+      // CSV fallback (legacy format: date,time,qty[,cereals])
+      const lines = text.split(/\r?\n/);
+      const imported = [];
+      const header = (lines[0] || '').toLowerCase();
+      const hasCereals = header.includes('cereal');
+      for (let i = 1; i < lines.length; i++) {
+        const parts = lines[i].split(',');
+        const [date, time, qty, cereals] = parts;
+        if (date && time && qty) {
+          const feed = { date: date.trim(), time: time.trim(), qty: parseInt(qty, 10) };
+          if (hasCereals && cereals) {
+            const c = parseInt(cereals, 10);
+            if (c > 0) feed.cereals = c;
+          }
+          imported.push(feed);
+        }
+      }
+      if (imported.length > 0 && confirm('Importar ' + imported.length + ' biberons des de CSV? (substituirà els biberons actuals, els sons es mantenen)')) {
         feeds = imported;
         saveFeeds();
         render();
-        showToast(imported.length + ' preses importades ✓');
+        showToast(imported.length + ' biberons importats ✓');
       }
-    } catch (err) { alert('Error: ' + err.message); }
+    } catch (err) {
+      alert('Error llegint el fitxer: ' + err.message);
+    }
   };
   reader.readAsText(file);
 });
